@@ -1,0 +1,137 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{
+    self, mint_to, transfer_checked, InitializeAccount, Mint, Token, TokenAccount, TransferChecked,
+};
+declare_id!("5BGLko37bhAHbqSxwFX3Eb6PuQemEt7a7gsevbMJrtFU");
+
+#[program]
+mod hello_anchor {
+    use super::*;
+
+    pub fn initialize(ctx: Context<InitializeTokenVault>) -> Result<()> {
+        let token_account = &ctx.accounts.token_stake_account;
+        msg!("Vault Account Initialized Successfully!");
+        msg!("Token Account Address: {:?}", token_account.key());
+        msg!("Token Balance: {:?}", token_account.amount);
+        let mint_supply = ctx.accounts.mint.supply / 1_000_000_000;
+        msg!("Token Supply: {}", mint_supply);
+        Ok(())
+    }
+
+    pub fn mint_tokens(ctx: Context<MintTokens>, amount: u64) -> Result<()> {
+        let mint = &ctx.accounts.mint;
+        let receiver = &ctx.accounts.sender;
+        let signer = &ctx.accounts.signer;
+
+        // Create the CPI context
+        let cpi_accounts = token::MintTo {
+            mint: mint.to_account_info(),
+            to: receiver.to_account_info(),
+            authority: signer.to_account_info(),
+        };
+
+        let cpi_context =
+            CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+
+        // Mint tokens to the sender's account
+        token::mint_to(cpi_context, amount)?;
+
+        msg!(
+            "Successfully minted {} tokens to {:?}",
+            amount,
+            receiver.key()
+        );
+
+        Ok(())
+    }
+
+    pub fn transfer_tokens(ctx: Context<TransferToken>, amount: u64) -> Result<()> {
+        let sender = &ctx.accounts.sender;
+        let receiver = &ctx.accounts.receiver;
+        let mint = &ctx.accounts.mint;
+        let sender_authority = &ctx.accounts.signer;
+
+        // Ensure sender has enough balance
+        if sender.amount < amount {
+            return Err(ErrorCode::InsufficientBalance.into());
+        }
+
+        let cpi_accounts = TransferChecked {
+            from: sender.to_account_info(),
+            to: receiver.to_account_info(),
+            mint: mint.to_account_info(),
+            authority: sender_authority.to_account_info(),
+        };
+
+        let cpi_context =
+            CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+
+        // Perform the token transfer
+        token::transfer_checked(cpi_context, amount, mint.decimals)?;
+
+        msg!(
+            "Successfully transferred {} tokens from {} to {}!",
+            amount,
+            sender.key(),
+            receiver.key()
+        );
+
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct InitializeTokenVault<'info> {
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"token_vault", signer.key().as_ref()],
+        bump,
+        token::mint = mint,       // Ensure the token account uses the correct mint
+        token::authority = signer // The signer will be the owner of the token account
+    )]
+    pub token_stake_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub mint: Account<'info, Mint>, // The mint associated with this token account
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct MintTokens<'info> {
+    #[account(mut)]
+    pub sender: Account<'info, TokenAccount>, // Sender's token account
+    #[account(mut)]
+    pub signer: Signer<'info>, // The authority of the sender account
+    pub mint: Account<'info, Mint>, // The mint associated with the tokens
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct TransferToken<'info> {
+    #[account(mut)]
+    pub sender: Account<'info, TokenAccount>, // Sender's token account
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"receiver_account", signer.key().as_ref()],
+        bump,
+        token::mint = mint,       // Ensure the receiver uses the correct mint
+        token::authority = signer // Authority of the receiver account
+    )]
+    pub receiver: Account<'info, TokenAccount>, // Receiver's token account
+    #[account(mut)]
+    pub signer: Signer<'info>, // The authority of the sender account
+    pub mint: Account<'info, Mint>, // The mint associated with the tokens
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Insufficient balance in sender's account.")]
+    InsufficientBalance,
+}
